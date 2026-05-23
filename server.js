@@ -1,306 +1,390 @@
-require("dotenv").config();
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const bcrypt = require("bcryptjs");
+// ADaffiliateMedia CPA Network — Backend API
+// Node.js + Express + MongoDB + JWT
+
+const express = require('express');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+require('dotenv').config();
 
 const app = express();
-app.use(express.json());
-app.use(cors({ origin: "*" }));
 
-// ─── MongoDB ──────────────────────────────────────────────────────────────────
-mongoose
-  .connect(process.env.MONGO_URL)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => { console.error("❌ MongoDB error:", err); process.exit(1); });
-
-// ─── Schemas ──────────────────────────────────────────────────────────────────
-
-const Counter = mongoose.model("Counter", new mongoose.Schema({
-  _id: String,
-  seq: { type: Number, default: 0 },
+// ── MIDDLEWARE ──
+app.use(cors({
+  origin: [
+    'https://adaffiliatemedia.netlify.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500'
+  ]
 }));
+app.use(express.json());
 
-async function nextWorkerId() {
-  const doc = await Counter.findByIdAndUpdate(
-    "worker_id",
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
-  );
-  return "W" + String(doc.seq).padStart(5, "0");
-}
+// ── DB CONNECTION ──
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
 
-const workerSchema = new mongoose.Schema({
-  id:             { type: String, unique: true },
-  fullName:       String,
-  email:          { type: String, unique: true, lowercase: true, trim: true },
-  password:       String,
-  address:        String,
-  phone:          String,
-  country:        String,
-  city:           String,
-  state:          String,
-  zipcode:        String,
-  status:         { type: String, enum: ["pending","approved","rejected"], default: "pending" },
-  role:           { type: String, default: "worker" },
-  balance:        { type: Number, default: 0 },
-  totalEarned:    { type: Number, default: 0 },
-  leads:          { type: Number, default: 0 },
-  paymentMethod:  { type: String, default: "" },
-  paymentAccount: { type: String, default: "" },
-  createdAt:      { type: Date, default: Date.now },
-});
-const Worker = mongoose.model("Worker", workerSchema);
+// ── MODELS ──
 
-const leadSchema = new mongoose.Schema({
-  worker_id: String,
-  offer_id:  String,
-  payout:    Number,
-  status:    String,
-  click_id:  String,
-  time:      { type: Date, default: Date.now },
-});
-const Lead = mongoose.model("Lead", leadSchema);
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'manager', 'support'], default: 'support' },
+  lastLogin: Date,
+  status: { type: String, default: 'active' }
+}, { timestamps: true });
 
-const withdrawalSchema = new mongoose.Schema({
-  id:         { type: String, unique: true },
-  worker_id:  String,
-  workerName: String,
-  amount:     Number,
-  method:     String,
-  account:    String,
-  status:     { type: String, enum: ["pending","paid"], default: "pending" },
-  createdAt:  { type: Date, default: Date.now },
-  paidAt:     Date,
-});
-const Withdrawal = mongoose.model("Withdrawal", withdrawalSchema);
+const AffiliateSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  paymentMethod: String,
+  earnings: { type: Number, default: 0 },
+  conversions: { type: Number, default: 0 },
+  status: { type: String, default: 'pending' }
+}, { timestamps: true });
 
-// ─── Admin Middleware ─────────────────────────────────────────────────────────
-function adminOnly(req, res, next) {
-  const key = req.headers["x-admin-key"];
-  if (!key || key !== process.env.ADMIN_KEY) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-  next();
-}
+const OfferSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  category: String,
+  payout: { type: Number, required: true },
+  dailyCap: Number,
+  status: { type: String, default: 'live' },
+  url: String,
+  convRate: { type: Number, default: 0 }
+}, { timestamps: true });
 
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
+const ConversionSchema = new mongoose.Schema({
+  affiliateId: { type: mongoose.Schema.Types.ObjectId, ref: 'Affiliate' },
+  affiliate: String,
+  offer: String,
+  offerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer' },
+  payout: Number,
+  status: { type: String, default: 'pending' }
+}, { timestamps: true });
 
-// POST /api/auth/register
-app.post("/api/auth/register", async (req, res) => {
+const ClickSchema = new mongoose.Schema({
+  affiliateId: { type: mongoose.Schema.Types.ObjectId, ref: 'Affiliate' },
+  affiliate: String,
+  offer: String,
+  ip: String,
+  country: String,
+  converted: { type: String, default: 'no' },
+  isFraud: { type: Boolean, default: false }
+}, { timestamps: true });
+
+const PaymentSchema = new mongoose.Schema({
+  affiliateId: { type: mongoose.Schema.Types.ObjectId, ref: 'Affiliate' },
+  affiliate: String,
+  amount: Number,
+  method: String,
+  status: { type: String, default: 'pending' }
+}, { timestamps: true });
+
+const User       = mongoose.model('User', UserSchema);
+const Affiliate  = mongoose.model('Affiliate', AffiliateSchema);
+const Offer      = mongoose.model('Offer', OfferSchema);
+const Conversion = mongoose.model('Conversion', ConversionSchema);
+const Click      = mongoose.model('Click', ClickSchema);
+const Payment    = mongoose.model('Payment', PaymentSchema);
+
+// ── JWT MIDDLEWARE ──
+const authMiddleware = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'No token provided' });
   try {
-    const { fullName, email, password, address, phone, country, city, state, zipcode } = req.body;
-    if (!fullName || !email || !password)
-      return res.status(400).json({ error: "Full name, email and password are required." });
-
-    const exists = await Worker.findOne({ email: email.toLowerCase().trim() });
-    if (exists) return res.status(409).json({ error: "Email already registered." });
-
-    const hashed = await bcrypt.hash(password, 12);
-    const id = await nextWorkerId();
-
-    await Worker.create({ id, fullName, email, password: hashed, address, phone, country, city, state, zipcode });
-    res.status(201).json({ message: "Registration successful! Awaiting admin approval." });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ message: 'Invalid or expired token' });
   }
-});
+};
+
+// ── AUTH ROUTES ──
 
 // POST /api/auth/login
-app.post("/api/auth/login", async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password)
-      return res.status(400).json({ error: "Email and password required." });
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
-    // Admin
-    if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASS) {
-      return res.json({ role: "admin", email, fullName: "Administrator" });
-    }
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
-    const worker = await Worker.findOne({ email: email.toLowerCase().trim() });
-    if (!worker) return res.status(401).json({ error: "Invalid credentials." });
+    user.lastLogin = new Date();
+    await user.save();
 
-    const match = await bcrypt.compare(password, worker.password);
-    if (!match) return res.status(401).json({ error: "Invalid credentials." });
+    const token = jwt.sign(
+      { id: user._id, role: user.role, name: user.name },
+      process.env.JWT_SECRET,
+      { expiresIn: '12h' }
+    );
 
-    if (worker.status === "pending")
-      return res.status(403).json({ error: "Your account is awaiting admin approval." });
-    if (worker.status === "rejected")
-      return res.status(403).json({ error: "Your account has been rejected." });
-
-    const w = worker.toObject();
-    delete w.password;
-    res.json(w);
+    res.json({
+      token,
+      user: { id: user._id, name: user.name, email: user.email, role: user.role }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// ─── WORKER ───────────────────────────────────────────────────────────────────
+// ── DASHBOARD ──
 
-// GET /api/workers/:id
-app.get("/api/workers/:id", async (req, res) => {
+// GET /api/admin/dashboard
+app.get('/api/admin/dashboard', authMiddleware, async (req, res) => {
   try {
-    const worker = await Worker.findOne({ id: req.params.id }).select("-password");
-    if (!worker) return res.status(404).json({ error: "Worker not found." });
-    res.json(worker);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+    const today = new Date(); today.setHours(0,0,0,0);
+    const month = new Date(); month.setDate(1); month.setHours(0,0,0,0);
 
-// PUT /api/workers/:id
-app.put("/api/workers/:id", async (req, res) => {
-  try {
-    const allowed = ["fullName","email","address","phone","country","city","state","zipcode","paymentMethod","paymentAccount"];
-    const updates = {};
-    for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
+    const [totalAffiliates, activeOffers, clicksToday, revenueAgg, recentConversions] = await Promise.all([
+      Affiliate.countDocuments(),
+      Offer.countDocuments({ status: 'live' }),
+      Click.countDocuments({ createdAt: { $gte: today } }),
+      Conversion.aggregate([
+        { $match: { createdAt: { $gte: month }, status: 'approved' } },
+        { $group: { _id: null, total: { $sum: '$payout' } } }
+      ]),
+      Conversion.find().sort({ createdAt: -1 }).limit(10)
+    ]);
 
-    const worker = await Worker.findOneAndUpdate({ id: req.params.id }, updates, { new: true }).select("-password");
-    if (!worker) return res.status(404).json({ error: "Worker not found." });
-    res.json(worker);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// GET /api/workers/:id/leads
-app.get("/api/workers/:id/leads", async (req, res) => {
-  try {
-    const leads = await Lead.find({ worker_id: req.params.id }).sort({ time: -1 });
-    res.json(leads);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// GET /api/workers/:id/withdrawals
-app.get("/api/workers/:id/withdrawals", async (req, res) => {
-  try {
-    const list = await Withdrawal.find({ worker_id: req.params.id }).sort({ createdAt: -1 });
-    res.json(list);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /api/workers/:id/withdrawals
-app.post("/api/workers/:id/withdrawals", async (req, res) => {
-  try {
-    const { amount, method, account } = req.body;
-    const worker = await Worker.findOne({ id: req.params.id });
-    if (!worker) return res.status(404).json({ error: "Worker not found." });
-    if (!method || !account) return res.status(400).json({ error: "Payment method and account required." });
-    const amt = parseFloat(amount);
-    if (!amt || amt < 50) return res.status(400).json({ error: "Minimum withdrawal is $50." });
-    if (worker.balance < amt) return res.status(400).json({ error: "Insufficient balance." });
-
-    const wd = await Withdrawal.create({
-      id: "WD" + Date.now(), worker_id: worker.id, workerName: worker.fullName,
-      amount: amt, method, account,
+    res.json({
+      totalAffiliates,
+      activeOffers,
+      clicksToday,
+      revenueMonth: revenueAgg[0]?.total || 0,
+      recentConversions: recentConversions.map(c => ({
+        affiliate: c.affiliate,
+        offer: c.offer,
+        payout: c.payout,
+        time: timeAgo(c.createdAt),
+        status: c.status
+      }))
     });
-    worker.balance -= amt;
-    await worker.save();
-    res.status(201).json(wd);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
-// ─── POSTBACK ─────────────────────────────────────────────────────────────────
+// ── AFFILIATES ──
 
-// GET /api/postback?worker_id=W00001&offer_id=3&payout=1.0&status=lead&click_id=abc
-app.get("/api/postback", async (req, res) => {
+// GET /api/admin/affiliates
+app.get('/api/admin/affiliates', authMiddleware, async (req, res) => {
   try {
-    const { worker_id, offer_id, payout, status, click_id } = req.query;
-    if (!worker_id) return res.status(400).json({ error: "worker_id required." });
-
-    const worker = await Worker.findOne({ id: worker_id });
-    if (!worker) return res.status(404).json({ error: "Worker not found." });
-
-    const amt = parseFloat(payout) || 0;
-    await Lead.create({ worker_id, offer_id: offer_id || "unknown", payout: amt, status: status || "lead", click_id });
-
-    if (status !== "reject") {
-      worker.balance     += amt;
-      worker.totalEarned += amt;
-      worker.leads       += 1;
-      await worker.save();
-    }
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const affiliates = await Affiliate.find().select('-password').sort({ createdAt: -1 });
+    res.json({ affiliates });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// ─── ADMIN ────────────────────────────────────────────────────────────────────
-
-// GET /api/admin/overview
-app.get("/api/admin/overview", adminOnly, async (req, res) => {
+// POST /api/admin/affiliates
+app.post('/api/admin/affiliates', authMiddleware, async (req, res) => {
   try {
-    const [totalWorkers, activeWorkers, pendingWorkers, rejectedWorkers, totalLeads, pendingWithdrawals, earningsAgg] = await Promise.all([
-      Worker.countDocuments(),
-      Worker.countDocuments({ status: "approved" }),
-      Worker.countDocuments({ status: "pending" }),
-      Worker.countDocuments({ status: "rejected" }),
-      Lead.countDocuments(),
-      Withdrawal.countDocuments({ status: "pending" }),
-      Worker.aggregate([{ $group: { _id: null, total: { $sum: "$totalEarned" } } }]),
+    const { name, email, password, paymentMethod } = req.body;
+    const hashed = await bcrypt.hash(password, 10);
+    const affiliate = await Affiliate.create({ name, email, password: hashed, paymentMethod });
+    res.json({ affiliate: { ...affiliate.toObject(), password: undefined } });
+  } catch (err) {
+    res.status(400).json({ message: err.code === 11000 ? 'Email already exists' : 'Error creating affiliate' });
+  }
+});
+
+// PATCH /api/admin/affiliates/:id/status
+app.patch('/api/admin/affiliates/:id/status', authMiddleware, async (req, res) => {
+  try {
+    const affiliate = await Affiliate.findByIdAndUpdate(req.params.id, { status: req.body.status }, { new: true });
+    res.json({ affiliate });
+  } catch { res.status(500).json({ message: 'Server error' }); }
+});
+
+// ── OFFERS ──
+
+// GET /api/admin/offers
+app.get('/api/admin/offers', authMiddleware, async (req, res) => {
+  try {
+    const offers = await Offer.find().sort({ createdAt: -1 });
+    res.json({ offers });
+  } catch { res.status(500).json({ message: 'Server error' }); }
+});
+
+// POST /api/admin/offers
+app.post('/api/admin/offers', authMiddleware, async (req, res) => {
+  try {
+    const offer = await Offer.create(req.body);
+    res.json({ offer });
+  } catch { res.status(500).json({ message: 'Server error' }); }
+});
+
+// PATCH /api/admin/offers/:id
+app.patch('/api/admin/offers/:id', authMiddleware, async (req, res) => {
+  try {
+    const offer = await Offer.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ offer });
+  } catch { res.status(500).json({ message: 'Server error' }); }
+});
+
+// ── PAYMENTS ──
+
+// GET /api/admin/payments
+app.get('/api/admin/payments', authMiddleware, async (req, res) => {
+  try {
+    const [requests, pendingAgg, paidAgg, disputedAgg] = await Promise.all([
+      Payment.find().sort({ createdAt: -1 }),
+      Payment.aggregate([{ $match:{ status:'pending' } },{ $group:{ _id:null, total:{ $sum:'$amount' } } }]),
+      Payment.aggregate([{ $match:{ status:'paid' } },{ $group:{ _id:null, total:{ $sum:'$amount' } } }]),
+      Payment.aggregate([{ $match:{ status:'disputed' } },{ $group:{ _id:null, total:{ $sum:'$amount' } } }]),
     ]);
     res.json({
-      totalWorkers, activeWorkers, pendingWorkers, rejectedWorkers,
-      totalLeads, pendingWithdrawals,
-      totalEarnings: earningsAgg[0]?.total || 0,
+      requests: requests.map(p => ({ ...p.toObject(), date: p.createdAt.toLocaleDateString('en-US',{month:'short',day:'numeric'}) })),
+      pendingTotal: pendingAgg[0]?.total || 0,
+      paidMonth: paidAgg[0]?.total || 0,
+      disputed: disputedAgg[0]?.total || 0
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// GET /api/admin/workers?status=pending
-app.get("/api/admin/workers", adminOnly, async (req, res) => {
+// POST /api/admin/payments/:id/approve
+app.post('/api/admin/payments/:id/approve', authMiddleware, async (req, res) => {
   try {
-    const filter = req.query.status ? { status: req.query.status } : {};
-    const workers = await Worker.find(filter).select("-password").sort({ createdAt: -1 });
-    res.json(workers);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const payment = await Payment.findByIdAndUpdate(req.params.id, { status: 'paid' }, { new: true });
+    res.json({ payment });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// PATCH /api/admin/workers/:id/approve
-app.patch("/api/admin/workers/:id/approve", adminOnly, async (req, res) => {
+// ── TRACKING ──
+
+// GET /api/admin/tracking
+app.get('/api/admin/tracking', authMiddleware, async (req, res) => {
   try {
-    const w = await Worker.findOneAndUpdate({ id: req.params.id }, { status: "approved" }, { new: true }).select("-password");
-    if (!w) return res.status(404).json({ error: "Worker not found." });
-    res.json({ message: `${w.fullName} approved.`, worker: w });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const today = new Date(); today.setHours(0,0,0,0);
+    const [clicksToday, conversions, fraudClicks, clickLog] = await Promise.all([
+      Click.countDocuments({ createdAt: { $gte: today } }),
+      Click.countDocuments({ createdAt: { $gte: today }, converted: 'yes' }),
+      Click.countDocuments({ isFraud: true }),
+      Click.find().sort({ createdAt: -1 }).limit(50)
+    ]);
+    const convRate = clicksToday ? ((conversions / clicksToday) * 100).toFixed(2) : 0;
+    res.json({
+      clicksToday, conversions, convRate, fraudClicks,
+      clickLog: clickLog.map(c => ({
+        time: c.createdAt.toTimeString().slice(0,8),
+        affiliate: c.affiliate, offer: c.offer,
+        ip: c.ip, country: c.country, converted: c.converted
+      }))
+    });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// PATCH /api/admin/workers/:id/reject
-app.patch("/api/admin/workers/:id/reject", adminOnly, async (req, res) => {
+// Public click tracking endpoint (called by affiliate links)
+app.post('/api/track/click', async (req, res) => {
   try {
-    const w = await Worker.findOneAndUpdate({ id: req.params.id }, { status: "rejected" }, { new: true }).select("-password");
-    if (!w) return res.status(404).json({ error: "Worker not found." });
-    res.json({ message: `${w.fullName} rejected.`, worker: w });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const { affiliateId, offerId, ip, country } = req.body;
+    const [affiliate, offer] = await Promise.all([
+      Affiliate.findById(affiliateId),
+      Offer.findById(offerId)
+    ]);
+    if (!affiliate || !offer) return res.status(404).json({ message: 'Not found' });
+
+    // Simple fraud check — duplicate IP in last 1h
+    const recent = await Click.findOne({ ip, affiliateId, createdAt: { $gte: new Date(Date.now()-3600000) } });
+    const isFraud = !!recent;
+
+    await Click.create({ affiliateId, affiliate: affiliate.name, offer: offer.name, ip, country, isFraud });
+    res.json({ success: true, redirect: offer.url });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// GET /api/admin/leads
-app.get("/api/admin/leads", adminOnly, async (req, res) => {
+// ── REPORTS ──
+
+// GET /api/admin/reports
+app.get('/api/admin/reports', authMiddleware, async (req, res) => {
   try {
-    const leads = await Lead.find().sort({ time: -1 }).limit(1000);
-    res.json(leads);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const report = await Conversion.aggregate([
+      { $match: { status: 'approved' } },
+      { $group: {
+        _id: '$affiliate',
+        revenue: { $sum: '$payout' },
+        conversions: { $sum: 1 }
+      }},
+      { $sort: { revenue: -1 } }
+    ]);
+
+    const clickCounts = await Click.aggregate([
+      { $group: { _id: '$affiliate', clicks: { $sum: 1 } } }
+    ]);
+    const clickMap = {};
+    clickCounts.forEach(c => clickMap[c._id] = c.clicks);
+
+    res.json({
+      report: report.map(r => ({
+        affiliate: r._id,
+        revenue: r.revenue,
+        conversions: r.conversions,
+        clicks: clickMap[r._id] || 0,
+        rate: clickMap[r._id] ? ((r.conversions / clickMap[r._id]) * 100).toFixed(1) : '0.0',
+        epc: clickMap[r._id] ? (r.revenue / clickMap[r._id]).toFixed(2) : '0.00'
+      }))
+    });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// GET /api/admin/withdrawals?status=pending
-app.get("/api/admin/withdrawals", adminOnly, async (req, res) => {
+// ── USERS (Admin) ──
+
+// GET /api/admin/users
+app.get('/api/admin/users', authMiddleware, async (req, res) => {
   try {
-    const filter = req.query.status ? { status: req.query.status } : {};
-    const list = await Withdrawal.find(filter).sort({ createdAt: -1 });
-    res.json(list);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const users = await User.find().select('-password');
+    res.json({
+      users: users.map(u => ({
+        ...u.toObject(),
+        lastLogin: u.lastLogin ? timeAgo(u.lastLogin) : 'Never'
+      }))
+    });
+  } catch { res.status(500).json({ message: 'Server error' }); }
 });
 
-// PATCH /api/admin/withdrawals/:id/approve
-app.patch("/api/admin/withdrawals/:id/approve", adminOnly, async (req, res) => {
+// POST /api/admin/users
+app.post('/api/admin/users', authMiddleware, async (req, res) => {
   try {
-    const wd = await Withdrawal.findOneAndUpdate(
-      { id: req.params.id },
-      { status: "paid", paidAt: new Date() },
-      { new: true }
-    );
-    if (!wd) return res.status(404).json({ error: "Withdrawal not found." });
-    res.json({ message: "Payment approved.", withdrawal: wd });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const { name, email, password, role } = req.body;
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await User.create({ name, email, password: hashed, role });
+    res.json({ user: { ...user.toObject(), password: undefined } });
+  } catch (err) {
+    res.status(400).json({ message: err.code === 11000 ? 'Email already exists' : 'Error creating user' });
+  }
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Server on http://localhost:${PORT}`));
+// ── SEED FIRST ADMIN ──
+// Run once: POST /api/seed
+app.post('/api/seed', async (req, res) => {
+  try {
+    const exists = await User.findOne({ role: 'admin' });
+    if (exists) return res.json({ message: 'Admin already exists' });
+    const hashed = await bcrypt.hash(process.env.ADMIN_PASS || 'Admin@1234', 10);
+    await User.create({
+      name: 'Super Admin',
+      email: process.env.ADMIN_EMAIL || 'admin@adaffiliate.com',
+      password: hashed,
+      role: 'admin'
+    });
+    res.json({ message: 'Admin created! Delete this route after use.' });
+  } catch { res.status(500).json({ message: 'Error' }); }
+});
+
+// ── HELPERS ──
+function timeAgo(date) {
+  const diff = Math.floor((Date.now() - new Date(date)) / 1000);
+  if (diff < 60) return diff+'s ago';
+  if (diff < 3600) return Math.floor(diff/60)+'m ago';
+  if (diff < 86400) return Math.floor(diff/3600)+'h ago';
+  return Math.floor(diff/86400)+'d ago';
+}
+
+// Health check
+app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
